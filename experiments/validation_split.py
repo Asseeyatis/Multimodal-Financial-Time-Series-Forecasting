@@ -21,6 +21,8 @@ class ValidationSplit:
     dev_indices: np.ndarray
     holdout_indices: np.ndarray
     target_dates: np.ndarray
+    target_end_dates: np.ndarray
+    purged_indices: np.ndarray
     holdout_start_date: int
 
     @property
@@ -35,24 +37,38 @@ class ValidationSplit:
     def holdout_end_date(self) -> int:
         return int(self.target_dates[self.holdout_indices].max())
 
+    @property
+    def dev_target_end_date(self) -> int:
+        return int(self.target_end_dates[self.dev_indices].max())
+
 
 def make_validation_split(
     dataset: HS300Dataset,
     holdout_fraction: float = 0.2,
 ) -> ValidationSplit:
-    """Split a validation dataset chronologically by target start date."""
-    if dataset.split != "val":
-        raise ValueError("make_validation_split expects HS300Dataset(..., 'val')")
+    """Split chronologically and purge development labels overlapping holdout."""
     if not 0.0 < holdout_fraction < 1.0:
         raise ValueError("holdout_fraction must be between 0 and 1")
 
     target_dates = np.asarray(dataset.target_start_date, dtype=np.int32)
+    horizon = int(dataset.y.shape[1]) if dataset.y is not None else 24
+    target_end_dates = np.empty(len(dataset), dtype=np.int32)
+    for stock_index, code in enumerate(dataset.stock_codes):
+        mask = dataset.stock_index == stock_index
+        end_indices = dataset.input_start[mask] + 96 + horizon - 1
+        stock_days = dataset.price_days[code]
+        if len(end_indices) and int(end_indices.max()) >= len(stock_days):
+            raise ValueError(f"target dates exceed available prices for {code}")
+        target_end_dates[mask] = stock_days[end_indices]
+
     unique_dates = np.unique(target_dates)
     holdout_date_count = max(1, int(np.ceil(len(unique_dates) * holdout_fraction)))
     holdout_start_date = int(unique_dates[-holdout_date_count])
 
     holdout_indices = np.flatnonzero(target_dates >= holdout_start_date)
-    dev_indices = np.flatnonzero(target_dates < holdout_start_date)
+    dev_candidates = target_dates < holdout_start_date
+    dev_indices = np.flatnonzero(dev_candidates & (target_end_dates < holdout_start_date))
+    purged_indices = np.flatnonzero(dev_candidates & (target_end_dates >= holdout_start_date))
     if len(dev_indices) == 0 or len(holdout_indices) == 0:
         raise ValueError("split produced an empty development or holdout portion")
 
@@ -60,6 +76,8 @@ def make_validation_split(
         dev_indices=dev_indices,
         holdout_indices=holdout_indices,
         target_dates=target_dates,
+        target_end_dates=target_end_dates,
+        purged_indices=purged_indices,
         holdout_start_date=holdout_start_date,
     )
 
@@ -93,12 +111,20 @@ def save_split_metadata(
         "source_split": "val",
         "holdout_fraction_by_unique_target_dates": holdout_fraction,
         "development_samples": int(len(split.dev_indices)),
+        "purged_overlap_samples": int(len(split.purged_indices)),
         "holdout_samples": int(len(split.holdout_indices)),
         "development_target_start_date_min": split.dev_start_date,
         "development_target_start_date_max": split.dev_end_date,
+        "development_target_end_date_max": split.dev_target_end_date,
         "holdout_target_start_date_min": split.holdout_start_date,
         "holdout_target_start_date_max": split.holdout_end_date,
-        "rule": "target_start_date < holdout_start_date is development; otherwise holdout",
+        "purged_target_start_date_min": (
+            int(split.target_dates[split.purged_indices].min()) if len(split.purged_indices) else None
+        ),
+        "purged_target_start_date_max": (
+            int(split.target_dates[split.purged_indices].max()) if len(split.purged_indices) else None
+        ),
+        "rule": "holdout uses the latest target start dates; development targets must end before holdout starts",
     }
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
