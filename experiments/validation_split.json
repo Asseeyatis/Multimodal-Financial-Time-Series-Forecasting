@@ -1,0 +1,11 @@
+{
+  "source_split": "val",
+  "holdout_fraction_by_unique_target_dates": 0.2,
+  "development_samples": 61560,
+  "holdout_samples": 15390,
+  "development_target_start_date_min": 20231009,
+  "development_target_start_date_max": 20240123,
+  "holdout_target_start_date_min": 20240124,
+  "holdout_target_start_date_max": 20240227,
+  "rule": "target_start_date < holdout_start_date is development; otherwise holdout"
+}
